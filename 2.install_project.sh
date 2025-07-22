@@ -20,7 +20,7 @@ else
 fi
 
 # Patch folder
-SRC="patch"
+SRC="pathoram"
 
 if [ ! -d "$SRC" ]; then
   echo "PathORAM patch not found."

@@ -1,194 +1,260 @@
-#include <iostream>
-#include <stdexcept>
 #include "memory_system/impl/oram/oram_controller.h"
-
 
 namespace Ramulator {
 
-ORAMController::ORAMController(ORAMTree *oram_tree, IAddrMapper* m_addr_mapper, std::vector<IDRAMController*> m_controllers) {
-    this->oram_tree = oram_tree;
-    this->m_addr_mapper = m_addr_mapper;
-    this->m_controllers = m_controllers;
-    required_acks = oram_tree->get_z_blocks() * oram_tree->get_tree_depth();
+ORAMController::ORAMController(Addr_t max_paddr, int block_size, int z_blocks, int arity, int stash_size, Clk_t crypt_decrypt_delay,
+                                IAddrMapper* m_addr_mapper, std::vector<IDRAMController*> m_controllers, IntegrityChecker* integrity_checker) {
+  this->crypt_decrypt_delay = crypt_decrypt_delay;
+  access_logic = AccessLogic(max_paddr, block_size, z_blocks, arity, &oob_tree);
+  stash = Stash(stash_size);
+  this->m_addr_mapper = m_addr_mapper;
+  this->m_controllers = m_controllers;
+  this->integrity_checker = integrity_checker;
+  required_acks = z_blocks * (access_logic.get_tree_depth()+1);
 }
 
-bool ORAMController::send_to_controller(Request &req) {
+bool ORAMController::send_to_controller(Request& req) {
   m_addr_mapper->apply(req);
   int channel_id = req.addr_vec[0];
   return m_controllers[channel_id]->send(req);
 }
 
+void ORAMController::decrypt_block() {
+if(curr_transaction->decrypt_time > m_clk) {
+    curr_transaction->decrypt_time += crypt_decrypt_delay;  
+  } else {
+    curr_transaction->decrypt_time = m_clk + crypt_decrypt_delay;
+  }
+}
+
 void ORAMController::oram_read_callback(Request& r) {
-  // When a READ is completed, increment the ack counter and write it to the stash.
-  // Set it to empty in the Bucket Header.
-  current_transaction->n_read_ack++;
-  BucketHeader *bh = oram_tree->get_bucket_header(r.addr);
-  int offset = oram_tree->get_block_offset(r.addr);
-  stash.emplace(r.addr, StashEntry{bh->get_block_ids()[offset]});
-  oram_tree->set_empty(r.addr);
+  decrypt_block();
+  curr_transaction->n_acks--;  
+  // Get the bucket-block memory mapping
+  int bucket_index = access_logic.get_bucket_index(r.addr);
+  int block_offset = access_logic.get_block_offset(r.addr);
+
+  // Get and remove the block from OOB Tree (Emulated DRAM Memory tree)
+  BlockHeader block_header = oob_tree.extract(bucket_index, block_offset);
+
+  // Check whether the block just read is dummy
+  if(block_header.is_dummy()) return;
+  
+  // If it is not dummy, then store it in the stash
+  if(!stash.add_entry(block_header)) return;
+
+  // Enqueue in integrity checker
+  integrity_checker->enqueue_block();
 }
 
-ORAMController::PosmapEntry *ORAMController::find_posmap_entry_by_block_id(int block_id) {
-  for (auto& entry : position_map) {
-    if (entry.second.block_id == block_id) {
-      return &entry.second;
-      }
+void ORAMController::oram_read_header_callback(Request& r) {
+  decrypt_block();
+}
+
+bool ORAMController::select_next_transaction() {
+  bool success = true;
+
+  if(curr_transaction == nullptr) {
+    if(transaction_table.empty()) {
+      success = false;
+    } else {
+      curr_transaction = &transaction_table.front();
+      // Get the effective leaf from the position map
+      curr_transaction->leaf = position_map.get_leaf(curr_transaction->program_addr);
+    }
   }
-  return nullptr;
+  return success;
 }
 
-ORAMController::StashEntry *ORAMController::find_stash_entry_by_block_id(int block_id) {
-  for (auto& entry : stash) {
-    if (entry.second.block_id == block_id) {
-      return &entry.second;
-      }
+void ORAMController::process_pending_reads() {
+  if (!pending_rd_reqs.empty()) {
+    Request& next_req = pending_rd_reqs.front();
+    //TODO: possible improvement with multiqueue
+    if (send_to_controller(next_req)) {
+      pending_rd_reqs.pop();
+      read_queue_stall = false;
+      (*pathoram_read_requests)++;
+    } else {
+      read_queue_stall = true;
+    }
   }
-  return nullptr;
 }
 
-void ORAMController::remap(int block_id) {
-  PosmapEntry *posmap_entry = find_posmap_entry_by_block_id(block_id);
-  if(posmap_entry == nullptr) return;
-  posmap_entry->leaf = oram_tree->get_random_leaf();
+void ORAMController::process_pending_writes() {
+  if (!pending_wb_reqs.empty()) {
+    WriteRequest& next_req = pending_wb_reqs.front();
+    if(m_clk > next_req.crypt_cycle) {
+      //Block encrypted
+      if (send_to_controller(next_req.req)) {
+        pending_wb_reqs.pop();
+        write_queue_stall = false;
+        (*pathoram_write_requests)++;
+      } else {
+        write_queue_stall = true;
+      }
+    }
+  }
+}
+
+void ORAMController::handle_reading_headers() {
+  Addr_t next_addr = access_logic.generate_next_hdr_address(curr_transaction->leaf);
+  if (next_addr != -1) {
+    Request load_request(next_addr, Request::Type::Read);
+    load_request.callback = [this](Request& req) {
+      this->oram_read_header_callback(req);
+    };
+    pending_rd_reqs.push(load_request);
+  } else {
+    curr_transaction->phase = Phase::ReadingData;
+  }
+}
+
+void ORAMController::handle_reading_data() {
+  Addr_t next_addr = access_logic.generate_next_data_address(curr_transaction->leaf);
+  if (next_addr != -1) {
+    Request load_request(next_addr, Request::Type::Read);
+    load_request.callback = [this](Request& req) {
+      this->oram_read_callback(req);
+    };
+    pending_rd_reqs.push(load_request);
+  } else {
+    curr_transaction->phase = Phase::WaitingReadsDone;
+  }
+}
+
+void ORAMController::handle_waiting_reads() {
+  if (curr_transaction->n_acks <= 0) {
+    //At this time, all the blocks have been received
+    if(m_clk > curr_transaction->decrypt_time) {
+      //Decrypt of all blocks terminated
+      curr_transaction->phase = Phase::Reply;
+    }
+  }
+}
+
+void ORAMController::handle_reply_block() {
+  if(stash.is_present(curr_transaction->program_addr)) {
+    // To handle consequent requests for the same address, the
+    // remapping procedure has to be placed here, after the reading
+    // of all the blocks. Earlier or Later remappings will results
+    // in inconsistency of leaf values stored in the different data structures.
+    int new_leaf = access_logic.get_random_leaf();
+    position_map.remap(curr_transaction->program_addr, new_leaf);
+    stash.remap(curr_transaction->program_addr, new_leaf);
+    access_logic.init_path(new_leaf);
+    curr_transaction->req.callback(curr_transaction->req);
+  } else {
+    throw "Block not found in either stash or memory";
+  }
+  level = access_logic.get_tree_depth();
+  curr_transaction->phase = Phase::Writing;
+}
+
+void ORAMController::handle_writing_phase() {
+  //If the writeback queue is full, exit from the cycle
+  if(write_queue_stall) return;
+
+  if(stash.is_empty()) {
+    level = access_logic.get_tree_depth();
+    curr_transaction->phase = Phase::WaitingWritesDone;
+    return;
+  }
+
+  auto stash_entry = stash.next();
+  if(stash_entry == stash.end()) {
+    level--;
+    if(level < 0) {
+      curr_transaction->phase = Phase::WaitingWritesDone;
+    }
+    return;
+  }
+
+  if(access_logic.is_common_bucket(curr_transaction->leaf, stash_entry->second, level)) {
+    Addr_t wb_addr = access_logic.writeback_level(stash_entry->second, level, stash_entry->first);
+    if(wb_addr != -1) {
+      Request write_request(wb_addr, Request::Type::Write);
+      Clk_t crypt_cycle = m_clk + crypt_decrypt_delay;
+      pending_wb_reqs.push(WriteRequest(write_request, crypt_cycle));
+      stash.erase();
+    }
+  }
+}
+
+void ORAMController::handle_waiting_writes_done() {
+  if (pending_wb_reqs.empty()) {
+    if (!transaction_table.empty() && curr_transaction != nullptr) {
+      transaction_table.pop();
+    }
+    curr_transaction = nullptr;
+  }
 }
 
 void ORAMController::tick() {
   m_clk++;
+
+  process_pending_reads();
+  process_pending_writes();
   
-  // Integrity operations
+  if(!select_next_transaction()) {
+    return;
+  }  
 
-  auto it = std::find_if(stash.begin(), stash.end(), [](const auto& pair) {
-    return pair.second.integrity_checked == false;
-  });
-  //Now, it variable has a reference to the next block in which integrity has to be verified
+  switch (curr_transaction->phase) {
+    case Phase::Pending:
+      curr_transaction->phase = Phase::ReadingHeaders;
+      break;
 
-  //FIXME: Perhaps the MEE is useless...a simple check_integrity function with clk latency could be the way
-  //---
-  if(current_transaction == nullptr) {
-    if(!oram_transactions.empty()) {
-      current_transaction = &oram_transactions.front();
-    } else {
-      return;
-    }
-  }
-  
-  if (current_transaction->phase == Phase::Reading) {
-    // Send the pending READ request buffered before in send() function
-    if(!current_transaction->pending_read.empty()) {
-      Request load_request(current_transaction->pending_read.front(), Request::Type::Read);
-      load_request.callback = [this](Request& req) {
-        this->oram_read_callback(req);
-      };
-      if(send_to_controller(load_request)) {
-        pathoram_read_requests++;
-        current_transaction->pending_read.pop_front();
-      }
-    } else {
-      // If all the read have been sent, then wait for the their completion (WaitingReadsDone)
-      current_transaction->phase = Phase::WaitingReadsDone;
-    }
-  }
-  else if (current_transaction->phase == Phase::WaitingReadsDone) {
-    if(current_transaction->n_read_ack == required_acks) {
-      // If all the read have been completed, call the original callback of the requested block
-      // (to inform the CPU that its block has been READ).
-      current_transaction->req.callback(current_transaction->req);
-      remap(position_map.at(current_transaction->req.addr).block_id);
-      current_transaction->phase = Phase::Writing;
-    }
-  }
-  else if (current_transaction->phase == Phase::Writing) {
-    // Finally, transition to Writing state to writeback all the dummy blocks stored in the stash.
-    // Get the next dummy block (with block_id value of -1) in the stash
-    auto it = std::find_if(stash.begin(), stash.end(), [](const auto& pair) {
-      return pair.second.block_id == -1;
-    });
+    case Phase::ReadingHeaders:
+      handle_reading_headers();
+      break;
 
-    // If the iterator equals to the stash.end() it means all the dummy blocks have been written back to memory.
-    // The following piece of code is suitable only for a '1 per time transaction'.
-    //TODO: REFACTORING!
-    if(it == stash.end()) {
-      // The last block is to data block
-      if(current_transaction->req.type_id == Request::Type::Write) {
-        //If the original request is a Write, then Writeback the data block to memory
-        PosmapEntry pe = position_map.at(current_transaction->req.addr);
-        // Get it in write_it
-        auto write_it = std::find_if(stash.begin(), stash.end(), [pe](const auto& pair) {
-          return pair.second.block_id == pe.block_id;
-        });
-        if(!write_it->second.writebacked) {
-          write_it->second.writeback_addr = oram_tree->insert_to_available_slot(pe.leaf, pe.block_id);
-          write_it->second.writebacked = true;
-        }
-        
-        //And writeback to memory
-        Request write_request(write_it->second.writeback_addr, Request::Type::Write);
-        if(send_to_controller(write_request)) {
-          pathoram_write_requests++;
-          stash.erase(write_it);
-          current_transaction = nullptr;
-          oram_transactions.pop_front();
-        }
-        return;
-      }
-      
-      current_transaction = nullptr;
-      oram_transactions.pop_front();
-      return;
-    }  
-    
-    // If a dummy block is found, writeback it to the DRAM Memory and remove it from stash
-    Request write_request(it->first, Request::Type::Write);
-    if(send_to_controller(write_request)) {
-      pathoram_write_requests++;
-      stash.erase(it);
-    }
+    case Phase::ReadingData:
+      handle_reading_data();
+      break;
+
+    case Phase::WaitingReadsDone:
+      handle_waiting_reads();
+      break;
+
+    case Phase::Reply:
+      handle_reply_block();
+      break;
+
+    case Phase::Writing:
+      handle_writing_phase();
+      break;
+
+    case Phase::WaitingWritesDone:
+      handle_waiting_writes_done();
+      break;
+
+    default:
+      break;
   }
 }
 
 bool ORAMController::send(Request req) {
-  uint64_t leaf = position_map.at(req.addr).leaf;
-  ORAMTransaction new_oram_transaction(Phase::Reading, 0, req, oram_tree->get_path_from_root(leaf));
-  oram_transactions.push_back(new_oram_transaction);
+  if(read_queue_stall) {
+    return false;
+  }
+
+  //Out of band init 
+  if(!position_map.is_present(req.addr)) {
+    int leaf = access_logic.get_random_leaf();
+    position_map.add_entry(req.addr, leaf);
+    access_logic.init_path(leaf);
+    if(!access_logic.insert_block_random_pos(req.addr, leaf)) exit(1);
+  }
+
+  TransactionEntry new_transaction_entry(Phase::Pending, req.addr, required_acks, -1, req, 0, 0);
+  transaction_table.push(new_transaction_entry);
   return true;
 }
 
-std::pair<std::unordered_map<Addr_t, ORAMController::PosmapEntry>::iterator, bool> ORAMController::posmap_allocate_entry(Addr_t addr, int block_id, uint64_t leaf) {
-  return position_map.insert({addr, {block_id, leaf}});
-}
-
-uint64_t ORAMController::posmap_get_entry_leaf(Addr_t addr) {
-    return position_map.at(addr).leaf;
-}
-
-int ORAMController::get_num_read_reqs() {
-  return pathoram_read_requests;
-}
-
-int ORAMController::get_num_write_reqs() {
-  return pathoram_write_requests;
-}
-
-int ORAMController::get_num_other_reqs() {
-  return pathoram_other_requests;
-}
-
-void ORAMController::print_position_map() {
-  printf("Position_map:\n");
-  for (const auto& pair : position_map) {
-    Addr_t addr = pair.first;
-    const PosmapEntry& entry = pair.second;
-    printf("Addr: %lu | Block ID: %d | Leaf: %lu\n", addr, entry.block_id, entry.leaf);
-  }
-}
-
-void ORAMController::print_stash() {
-  printf("Stash:\n");
-  for (const auto& pair : stash) {
-    Addr_t addr = pair.first;
-    const StashEntry& entry = pair.second;
-    printf("Addr: %lu | Block ID: %d\n", addr, entry.block_id);
-  }
+void ORAMController::set_access_counters(int &pathoram_num_read_requests, int &pathoram_num_write_requests, int &pathoram_num_other_requests) {
+  pathoram_read_requests = &pathoram_num_read_requests;
+  pathoram_write_requests = &pathoram_num_write_requests;
+  pathoram_other_requests = &pathoram_num_other_requests;
 }
 
 }   // namespace Ramulator
