@@ -65,7 +65,7 @@ for length_tree in length_tree_list:
                   config["Frontend"]["num_expected_insts"] = num_lines
                   #Set the command
                   cmd = ["./ramulator2", "-c", str(config)]
-                  log_filename = f"logs/alexnet/all_layers/hbm2_{length_tree}_{block_size}_{z_blocks}_{arity}_{stash_size}_{en_de_delay}_{hash_delay}_{ch}_{addr_mapper}.log"
+                  log_filename = f"logs/hbm2_{length_tree}_{block_size}_{z_blocks}_{arity}_{stash_size}_{en_de_delay}_{hash_delay}_{ch}_{addr_mapper}.log"
                   #Add the command to the list
                   commands.append((cmd, log_filename))
 
