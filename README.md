@@ -14,7 +14,7 @@ Basterà eseguire gli script secondo l'ordine enumerato:
 
 Per eseguire le simulazioni, usare uno dei seguenti tool:
 * ./4.run.sh: avvia il simulatore utilizzando una configurazione di default.
-* python3 run.py: avvia un pool di thread che esegue in parallelo gli esperimenti. **Modificare le lists nel file per aggiungere o rimuovere ulteriori valori dei parametri**.
+* python3 ramulator2/run_experiments.py: avvia un pool di thread che esegue in parallelo gli esperimenti. **Modificare le lists nel file per aggiungere o rimuovere ulteriori valori dei parametri**.
 
 Per convertire il formato simple_trace al formato adatto per SimpleO3:
 * python3 convert_trace_to_simpleo3.py
