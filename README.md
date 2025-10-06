@@ -11,15 +11,28 @@ Basterà eseguire gli script secondo l'ordine enumerato:
 * ./1.install_requirements.sh: installa i pacchetti richiesti per buildare il simulatore;
 * ./2.install_project.sh: clona la repository di ramulator2 e installa i sorgenti del componente PathORAM;
 * ./3.build.sh: genera l'eseguibile di ramulator2
+
+Per eseguire le simulazioni, usare uno dei seguenti tool:
 * ./4.run.sh: avvia il simulatore utilizzando una configurazione di default.
+* python3 run.py: avvia un pool di thread che esegue in parallelo gli esperimenti. **Modificare le lists nel file per aggiungere o rimuovere ulteriori valori dei parametri**.
+
+Per convertire il formato simple_trace al formato adatto per SimpleO3:
+* python3 convert_trace_to_simpleo3.py
+
+Per generare i plot dei contatori:
+* python3 memory_system_plot.py
+
+NB: gli script python necessitano di parametri di input da CLI. Consultare --help per i parametri accettati.
+
 
 # Descrizione Progetto
 Il repository contiene l'implementazione del componente PathORAM per l'Obliviousness della memoria, integrando il componente di verifica dell'integrità. È composto dai seguenti moduli:
 * PathORAMSystem : implementato in **path_ORAM_system.cpp**;
 * ORAMController : implementato in **oram_controller.h** e **oram_controller.cpp**;
+* IntegrityController: implementato in **integrity_controller.h** e **integrity_controller.cpp**
 * Stash : implementato in **stash.h** e **stash.cpp**;
 * PositionMap : implementato in **position_map.h** e **position_map.cpp**;
-* AccessLogic : implementato in **access_logic.h** e **access_logic.cpp**;
+* AddressLogic : implementato in **address_logic_double_tree.h** e **address_logic_double_tree.cpp**;
 * OOBTree : implementato in **oob_tree.h** e **oob_tree.cpp**;
 * Bucket : implementato in **bucket.h**;
 
@@ -42,4 +55,4 @@ Fornisce l'implementazione dei metodi che permettono un accesso controllato alla
 Modella i bucket. Fornisce i metodi necessari per manipolare i metadati (BlockHeader) e i blocchi (BlockData).
 
 ## BlockHeader
-Modella il singolo blocco header di un blocco.
+Modella il singolo header di un blocco.
