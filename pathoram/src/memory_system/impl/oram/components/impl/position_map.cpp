@@ -4,32 +4,32 @@ namespace Ramulator {
 
 PositionMap::PositionMap() {}
 
-bool PositionMap::add_entry(Addr_t program_addr, int leaf) {
-    bool inserted = position_map.insert({program_addr, leaf}).second;
+bool PositionMap::add_entry(Addr_t block_id, int leaf) {
+    bool inserted = position_map.insert({block_id, leaf}).second;
     if(inserted) {
         num_entries++;
     }
     return inserted;
 }
 
-bool PositionMap::remove_entry(Addr_t program_addr) {
-    int deleted_entries = position_map.erase(program_addr);
+bool PositionMap::remove_entry(Addr_t block_id) {
+    int deleted_entries = position_map.erase(block_id);
     num_entries -= deleted_entries;
     return deleted_entries > 0;
 }
 
-bool PositionMap::remap(Addr_t program_addr, int new_leaf) {
-    position_map.at(program_addr) = new_leaf;
+bool PositionMap::remap(Addr_t block_id, int new_leaf) {
+    position_map.at(block_id) = new_leaf;
     num_remappings++;
     return true;
 }
 
-int PositionMap::get_leaf(Addr_t program_addr) {
-    return position_map.at(program_addr);
+int PositionMap::get_leaf(Addr_t block_id) {
+    return position_map.at(block_id);
 }
 
-bool PositionMap::is_present(Addr_t program_addr) {
-    return position_map.find(program_addr) != position_map.end();
+bool PositionMap::is_present(Addr_t block_id) {
+    return position_map.find(block_id) != position_map.end();
 }
 
 int PositionMap::get_num_entries() const {

@@ -2,6 +2,8 @@
 #define ORAM_BACKEND_H
 
 #include <queue>
+#include <map>
+#include <string>
 
 #include "base/base.h"
 #include "base/request.h"
@@ -12,21 +14,24 @@
 #include "memory_system/impl/oram/oob/oob_tree.h"
 #include "memory_system/impl/oram/oob/bucket.h"
 
-#include "memory_system/impl/oram/components/inc/position_map.h"
-#include "memory_system/impl/oram/components/inc/access_logic.h"
-#include "memory_system/impl/oram/components/inc/stash.h"
+#include "memory_system/impl/oram/components/interfaces/iposition_map.h"
+#include "memory_system/impl/oram/components/interfaces/iaddress_logic.h"
+#include "memory_system/impl/oram/components/interfaces/istash.h"
+#include "memory_system/impl/oram/components/interfaces/ioram_controller.h"
+#include "memory_system/impl/oram/components/interfaces/iintegrity_controller.h"
 
-#include "memory_system/impl/oram/components/inc/integrity_checker.h"
+#include "memory_system/impl/oram/components/inc/oram_tree_info.h"
 
+#include <fstream>
 
-namespace Ramulator{
+namespace Ramulator {
 
 /**
  * @class ORAMController
  * @brief The main ORAM controller responsible for managing all subcomponents and data flow.
  *
  * The ORAMController is the core manager of ORAM operations. It contains
- * the Stash, Position Map, Access Logic, a Finite State Machine for each request,
+ * the Stash, Position Map, Address Logic, a Finite State Machine for each request,
  * a table of pending memory transactions, and a reference to the Out-of-Band ORAM structure.
  * 
  * Whenever a request is received from the CPU, it is enqueued in the transaction table.
@@ -37,7 +42,7 @@ namespace Ramulator{
  * @note This controller can be extended for further improvements.
  */
 
-class ORAMController : public Clocked<ORAMController> {
+class ORAMController : public IORAMController, Clocked<ORAMController> {
         /**
          * @brief Represents the current phase of an ORAM transaction.
          */
@@ -45,52 +50,54 @@ class ORAMController : public Clocked<ORAMController> {
 
         struct TransactionEntry {
             Phase phase;
-            Addr_t program_addr;
+            Request req;
+            Addr_t block_id;
             int n_acks;
             int leaf;
-            Request req;
-            Clk_t decrypt_time;
-            Clk_t crypt_time;
+            Clk_t decrypt_cycle;
+            bool integrity_checked;
+            Clk_t arrival_time;
         };
 
         struct WriteRequest {
             Request req;
-            Clk_t crypt_cycle;
+            Clk_t encrypt_cycle;
         };
-
+    public:
+        std::ofstream outdata;
+        
     private:
         int level;
         int required_acks;
-        Clk_t crypt_decrypt_delay;
+        Clk_t encrypt_delay;
+        Clk_t decrypt_delay;
 
-        int *pathoram_read_requests;
-        int *pathoram_write_requests;
-        int *pathoram_other_requests;
-
-        // Integrity checker components
-        IntegrityChecker* integrity_checker;
-
-        // Ramulator components
-        IAddrMapper* m_addr_mapper;
-        std::vector<IDRAMController*> m_controllers;
+        //Counters
+        size_t read_requests = 0;
+        size_t write_requests = 0;
+        size_t other_requests = 0;
+        size_t num_stall_tick = 0;
+        size_t cumulative_latency = 0;
 
         // ORAM Components
-        PositionMap position_map;
-        Stash stash;
-        AccessLogic access_logic;
+        IIntegrityController* integrity_controller;
+        IAddrMapper* m_addr_mapper;
+        std::vector<IDRAMController*> m_controllers;
+        const ORAMTreeInfo* oram_tree_info;
+        IPositionMap* position_map;
+        IStash* stash;
+        IAddressLogic* address_logic;
         
         // Transaction's queue
         std::queue<TransactionEntry> transaction_table;
-        TransactionEntry *curr_transaction;
+        TransactionEntry* curr_transaction;
 
         // Requests' queue to memory
         std::queue<Request> pending_rd_reqs;
-        bool read_queue_stall = false;
 
         std::queue<WriteRequest> pending_wb_reqs;
-        bool write_queue_stall = false;
         
-        //Out of band tree information
+        //Out of band tree
         OOBTree oob_tree;
 
         /**
@@ -166,6 +173,7 @@ class ORAMController : public Clocked<ORAMController> {
          *        The requests are buffered into the write queue.
          */
         void handle_writing_phase();
+        void handle_writing_dummy();
 
         /**
          * @brief Finalizes the current transaction after all writebacks are completed.
@@ -173,9 +181,11 @@ class ORAMController : public Clocked<ORAMController> {
          */
         void handle_waiting_writes_done();
 
-    public:    
-        ORAMController(Addr_t max_paddr, int block_size, int z_blocks, int arity, int stash_size, Clk_t crypt_decrypt_delay,
-                        IAddrMapper* m_addr_mapper, std::vector<IDRAMController*> m_controllers, IntegrityChecker* integrity_checker);
+    public:
+        ORAMController();
+
+        ORAMController(int stash_size, Clk_t encrypt_delay, Clk_t decrypt_delay, IAddrMapper* m_addr_mapper,
+                              std::vector<IDRAMController*> m_controllers);
         
         /**
          * @brief  Advances the ORAM controller simulation by one clock cycle.
@@ -183,7 +193,7 @@ class ORAMController : public Clocked<ORAMController> {
          * This method updates the internal state of the ORAM controller 
          * and processes any scheduled operations for the current cycle.
          */
-        void tick();
+        void tick() override;
 
         /**
          * @brief  Sends a request to the ORAM controller.
@@ -192,12 +202,18 @@ class ORAMController : public Clocked<ORAMController> {
          * and returns whether the request was successfully buffered or processed.
          * @return true if the request was accepted, false otherwise.
          */
-        bool send(Request req);
+        bool send(Request req) override;
+
+        void connect_integrity_controller(IIntegrityController* integrity_controller) override;
+
+        void integrity_check(Addr_t addr) override;
+
+        void attach_oram_info(const ORAMTreeInfo* oram_tree_info) override;
 
         /**
          * @brief  Attach the PathORAM's access counter to ORAMCounter.
          */
-        void set_access_counters(int &pathoram_num_read_requests, int &pathoram_num_write_requests, int &pathoram_num_other_requests);
+        void set_counters(std::map<std::string, size_t&>& counters) override;
 };
 
 

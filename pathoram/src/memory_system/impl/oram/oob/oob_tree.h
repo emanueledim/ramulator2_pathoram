@@ -44,7 +44,7 @@ class OOBTree {
 
         /**
          * @brief Removes a block header from a specific bucket and offset.
-         * This sets the leaf and program_addr to value -1 (dummy block).
+         * This sets the leaf and block_id to value -1 (dummy block).
          * Does not phisically remove the block.
          * @param bucket_index Index of the bucket.
          * @param block_offset Offset within the bucket.
@@ -66,13 +66,12 @@ class OOBTree {
          * @param block_offset Offset within the bucket.
          * @return The BlockHeader, or if the block is dummy.
          */
-        BlockHeader extract(int bucket_index, int block_offset);
+        BlockHeader pop(int bucket_index, int block_offset);
         
         /**
          * @brief Prints the full contents of the ORAM tree.
          */
         void dump() const;
-
 };
 
 }

@@ -1,0 +1,45 @@
+Frontend:
+  impl: SimpleO3
+  clock_ratio: 8
+  num_expected_insts: 6229488
+  traces:
+    - traces/alexnet/all_layers.trace
+
+  Translation:
+    impl: NoTranslation
+    max_addr: 2147483648
+              
+
+MemorySystem:
+  impl: PathORAM
+  clock_ratio: 3
+  base_address_tree: 0
+  length_tree: 2147483648
+  block_size: 512
+  z_blocks: 4
+  arity: 2
+  stash_size: 256
+  encrypt_delay: 1
+  decrypt_delay: 1
+  hash_delay: 80
+
+  DRAM:
+    impl: HBM2
+    org:
+      preset: HBM2_2Gb
+    timing:
+      preset: HBM2_2Gbps
+
+  Controller:
+    impl: Generic
+    Scheduler:
+      impl: FRFCFS
+    RefreshManager:
+      impl: AllBank
+    RowPolicy:
+      impl: OpenRowPolicy
+      cap: 4
+    plugins:
+
+  AddrMapper:
+    impl: BaRoPchChCo

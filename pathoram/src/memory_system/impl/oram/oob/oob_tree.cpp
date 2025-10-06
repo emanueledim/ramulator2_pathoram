@@ -9,7 +9,7 @@ bool OOBTree::insert_bucket(int bucket_index, const Bucket& bucket) {
 bool OOBTree::insert_block_header(int bucket_index, int block_offset, BlockHeader block_header) {
     auto it = buckets.find(bucket_index);
     if (it == buckets.end()) return false;
-    it->second.block_headers.at(block_offset).program_addr = block_header.program_addr;
+    it->second.block_headers.at(block_offset).block_id = block_header.block_id;
     it->second.block_headers.at(block_offset).leaf = block_header.leaf;
     return true;
 }
@@ -17,7 +17,7 @@ bool OOBTree::insert_block_header(int bucket_index, int block_offset, BlockHeade
 bool OOBTree::remove_block_header(int bucket_index, int block_offset) {
     auto it = buckets.find(bucket_index);
     if (it == buckets.end()) return false;
-    it->second.block_headers.at(block_offset).program_addr = -1;
+    it->second.block_headers.at(block_offset).block_id = -1;
     it->second.block_headers.at(block_offset).leaf = -1;
     return true;
 }
@@ -28,8 +28,8 @@ bool OOBTree::is_dummy(int bucket_index, int block_offset) const {
     return it->second.is_dummy(block_offset);
 }
 
-BlockHeader OOBTree::extract(int bucket_index, int block_offset) {
-    return buckets.at(bucket_index).extract_header(block_offset);
+BlockHeader OOBTree::pop(int bucket_index, int block_offset) {
+    return buckets.at(bucket_index).pop_header(block_offset);
 }
 
 void OOBTree::dump() const {

@@ -1,9 +1,9 @@
 #ifndef BUCKET_H
 #define BUCKET_H
 
-#include "base/base.h"
-
 #include <vector>
+
+#include "base/base.h"
 
 namespace Ramulator {
 
@@ -29,19 +29,19 @@ class Block {
  */
 class BlockHeader : public Block {
     public:
-        Addr_t program_addr = -1;
+        Addr_t block_id = -1;
         int leaf = -1;
 
         BlockHeader() = default;
 
         /**
          * @brief Parameterized constructor to create a block header.
-         * @param program_addr The logical address of the block.
+         * @param block_id The block id of the block.
          * @param leaf The ORAM leaf associated with the block.
          */
-        BlockHeader(Addr_t program_addr, int leaf) : program_addr(program_addr), leaf(leaf) {}
+        BlockHeader(Addr_t block_id, int leaf) : block_id(block_id), leaf(leaf) {}
 
-        bool is_dummy() { return program_addr < 0; }
+        bool is_dummy() { return block_id < 0; }
 };
 
 /**
@@ -68,6 +68,7 @@ class BlockData : public Block {
 class Bucket {
 
     private:
+        int bucket_id;
         std::vector<BlockHeader> block_headers;
         std::vector<BlockData> block_data;  //TODO: Unused. Not useful now.
     
@@ -85,7 +86,7 @@ class Bucket {
          * @param offset The index of the block header within the bucket.
          * @return A copy of `BlockHeader`; or throws if the block_header does not exists.
          */
-        BlockHeader extract_header(int offset) {
+        BlockHeader pop_header(int offset) {
             BlockHeader block_header = block_headers.at(offset);
             block_headers.at(offset) = BlockHeader();
             return block_header;
@@ -97,13 +98,13 @@ class Bucket {
          * @return `true` if the block is a dummy (invalid), `false` otherwise.
          */
         bool is_dummy(int offset) const {
-            return block_headers[offset].program_addr < 0;
+            return block_headers[offset].block_id < 0;
         }
 
         friend class OOBTree;
 
     public:
-
+        Bucket() {};
         /**
          * @brief Constructs a bucket with space for `z_blocks` default headers.
          * @param z_blocks The number of slots in the bucket.
@@ -121,17 +122,21 @@ class Bucket {
         /**
          * @brief Inserts a block header into the specified offset.
          * @param block_offset Index in the bucket to insert into.
-         * @param program_addr The address of the block.
+         * @param block_id The block id of the block.
          * @param leaf The associated leaf.
          * @return `true` if the insertion was successful; `false` otherwise.
          */
-        bool insert_block_header(int block_offset, Addr_t program_addr, int leaf) {
+        bool insert_block_header(int block_offset, Addr_t block_id, int leaf) {
+            /*bool success = false;
             if (block_offset >= 0 && block_offset < static_cast<int>(block_headers.size())) {
-                block_headers[block_offset].program_addr = program_addr;
+                block_headers[block_offset].block_id = block_id;
                 block_headers[block_offset].leaf = leaf;
-                return true;
+                success = true;
             }
-            return false;
+            return success;*/
+            block_headers[block_offset].block_id = block_id;
+            block_headers[block_offset].leaf = leaf;
+            return true;
         }
 
         /**
@@ -140,11 +145,12 @@ class Bucket {
          * @return `true` if the block was removed; `false` if offset is invalid.
          */
         bool remove_block_header(int block_offset) {
+            bool success = false;
             if (block_offset >= 0 && block_offset < static_cast<int>(block_headers.size())) {
                 block_headers[block_offset] = BlockHeader();
-                return true;
+                success = true;
             }
-            return false;
+            return success;
         }
 
         /**
@@ -153,7 +159,7 @@ class Bucket {
         void dump() const {
             for (size_t i = 0; i < block_headers.size(); ++i) {
                 const auto& hdr = block_headers[i];
-                std::cout<<" ["<< i<<"] addr: "<< hdr.program_addr <<", leaf: "<< hdr.leaf << std::endl;
+                std::cout<<" ["<< i<<"] block_id: "<< hdr.block_id <<", leaf: "<< hdr.leaf << std::endl;
             }
         }
 };
